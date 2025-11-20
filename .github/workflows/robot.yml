@@ -1,4 +1,6 @@
 name: Ejecutar Robot Anomalias
+permissions:
+  contents: write
 
 on:
   schedule:
