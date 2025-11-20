@@ -31,3 +31,42 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
           commit_message: "Resultados automáticos del robot - $(date +'%Y%m%d_%H%M')"
+    - name: Publicar en Bluesky
+      run: |
+        pip install atproto
+        python3 <<EOF
+        from atproto import Client, models
+
+        handle = "${{ secrets.BLUESKY_USERNAME }}"
+        app_password = "${{ secrets.BLUESKY_PASSWORD }}"
+
+        client = Client()
+        client.login(handle, app_password)
+
+        # Leer texto
+        with open("texto.txt", "r", encoding="utf-8") as f:
+            text = f.read()
+
+        # Leer imagen
+        with open("imagen.png", "rb") as img:
+            image_bytes = img.read()
+
+        # Subir la imagen a Bluesky
+        uploaded_image = client.com.atproto.repo.upload_blob(image_bytes, "image/png")
+
+        # Crear el post
+        client.app.bsky.feed.post.create(
+            repo=client.me.did,
+            record=models.AppBskyFeedPost.Record(
+                text=text,
+                embed=models.AppBskyEmbedImages.Main(
+                    images=[
+                        models.AppBskyEmbedImages.Image(
+                            image=uploaded_image.blob,
+                            alt="Imagen generada por el robot"
+                        )
+                    ]
+                )
+            )
+        )
+        EOF
