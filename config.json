@@ -2,28 +2,42 @@
   "books": {
     "Errores del Sistema": {
       "descripcion": "Ideas inquietantes sobre cómo percibimos causas y responsabilidades.",
-      "amazon": "https://tu_enlace_a_amazon_errores"
+      "amazon": "https://a.co/d/eroIJuT",
+      "utm_campaign": "errores"
     },
     "Gramática Estelar": {
       "descripcion": "Exploración sobre la emergencia de la vida y la conciencia.",
-      "amazon": "https://tu_enlace_a_amazon_gramatica"
+      "amazon": "https://a.co/d/8FWz5nh",
+      "utm_campaign": "gramatica"
     },
     "Vector del Movimiento": {
       "descripcion": "Hipótesis sobre el movimiento como magnitud unificadora.",
-      "amazon": "https://tu_enlace_a_amazon_vector"
+      "amazon": "https://a.co/d/2adulBA",
+      "utm_campaign": "vector"
     },
     "Teoría Entrópico-Estadística del Todo": {
       "descripcion": "Visión entrópico-estadística del cosmos y la acción mínima.",
-      "amazon": "https://tu_enlace_a_amazon_teoria"
+      "amazon": "https://a.co/d/57XjRfR",
+      "utm_campaign": "teoria"
     }
   },
+
   "generation": {
     "copies_per_run": 3,
     "images_per_run": 2
   },
+
   "output_paths": {
     "copys_dir": "generated_copys",
     "images_dir": "generated_images",
-    "logs_dir": "logs"
+    "logs_dir": "logs",
+    "state_dir": "state"
+  },
+
+  "beacons_url": "https://beacons.ai/anomaliasdelarealidad",
+
+  "publication": {
+    "mode": "alternate",   /* options: "single", "alternate", "random" */
+    "default_book_for_bluesky": null
   }
 }
