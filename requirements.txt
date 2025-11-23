@@ -1,4 +1,4 @@
 requests>=2.28
 Pillow>=9.0
 python-dotenv>=1.0
-atproto>=0.3.0
+atproto==0.0.63
