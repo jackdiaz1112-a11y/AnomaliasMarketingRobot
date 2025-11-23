@@ -21,23 +21,19 @@
       "utm_campaign": "teoria"
     }
   },
-
   "generation": {
     "copies_per_run": 3,
-    "images_per_run": 2
+    "images_per_run": 1
   },
-
   "output_paths": {
     "copys_dir": "generated_copys",
     "images_dir": "generated_images",
     "logs_dir": "logs",
     "state_dir": "state"
   },
-
   "beacons_url": "https://beacons.ai/anomaliasdelarealidad",
-
   "publication": {
-    "mode": "alternate",   /* options: "single", "alternate", "random" */
+    "mode": "alternate",
     "default_book_for_bluesky": null
   }
 }
