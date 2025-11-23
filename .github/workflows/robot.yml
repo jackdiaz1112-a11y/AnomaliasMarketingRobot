@@ -1,16 +1,16 @@
-name: Run Marketing Robot
+name: Marketing Robot
 
 on:
-  workflow_dispatch:    # Te permite ejecutar manualmente
+  workflow_dispatch:   # te permite ejecutarlo manualmente
   schedule:
-    - cron: "0 */6 * * *"   # Cada 6 horas (ajustable)
+    - cron: "0 */6 * * *"   # cada 6 horas (puedes cambiarlo)
 
 jobs:
   run-robot:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Repo
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -24,12 +24,19 @@ jobs:
           pip install -r requirements.txt
 
       - name: Mostrar versión de atproto
-        run: pip show atproto
+        run: pip show atproto || echo "atproto no instalado"
 
-      - name: Ejecutar script Bluesky
+      # Ejecuta el generador de textos e imágenes
+      - name: Ejecutar robot.py
+        run: |
+          echo "▶ Ejecutando robot.py"
+          python robot.py
+
+      # Ejecuta publicación en Bluesky
+      - name: Ejecutar publish_bluesky.py
         env:
-          BLUESKY_HANDLE: ${{ secrets.BLUESKY_HANDLE }}
+          BLUESKY_USERNAME: ${{ secrets.BLUESKY_USERNAME }}
           BLUESKY_PASSWORD: ${{ secrets.BLUESKY_PASSWORD }}
         run: |
+          echo "▶ Ejecutando publish_bluesky.py"
           python publish_bluesky.py
-
