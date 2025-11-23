@@ -26,16 +26,15 @@ jobs:
           pip install -r requirements.txt
           pip install atproto
 
-      - name: Run robot script
+      - name: Run robot
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          API_KEY: ${{ secrets.API_KEY }}
         run: python robot.py
 
-      - name: Commit generated files
+      - name: Commit generated files (if any)
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
-          commit_message: "Robot actualizado – build ${{ github.run_id }}"
+          commit_message: "Resultados automáticos del robot – build ${{ github.run_id }}"
 
       - name: Publish to Bluesky
         if: always()
@@ -48,62 +47,51 @@ import os
 from atproto import Client
 from atproto.models import AppBskyFeedPost, AppBskyEmbedImages
 
-# Credenciales
 handle = os.environ.get("BLUESKY_USERNAME")
 app_password = os.environ.get("BLUESKY_PASSWORD")
 
 if not handle or not app_password:
-    print("No Bluesky credentials. Skipping.")
+    print("No Bluesky credentials configured. Skipping publish.")
     exit(0)
 
-# Archivos generados
 text_path = "last_post_for_bluesky.txt"
-image_ref_path = "last_post_image.txt"
+imgref_path = "last_post_image.txt"
 
 if not os.path.exists(text_path):
-    print("No text file found. Aborting Bluesky post.")
+    print("No text for Bluesky, skipping.")
     exit(0)
 
-post_text = open(text_path, "r", encoding="utf-8").read().strip()
+text = open(text_path, "r", encoding="utf-8").read().strip()
 
-# Leer imagen si existe
-image_path = None
-if os.path.exists(image_ref_path):
-    v = open(image_ref_path, "r", encoding="utf-8").read().strip()
+img_path = None
+if os.path.exists(imgref_path):
+    v = open(imgref_path, "r", encoding="utf-8").read().strip()
     if v:
-        image_path = v
+        img_path = v
 
 client = Client()
 client.login(handle, app_password)
-print("Logged in as:", client.me.handle)
+print("Logged in as:", getattr(client.me, "handle", client.me.did if hasattr(client.me, "did") else "<did>"))
 
-image_blob = None
-if image_path and os.path.exists(image_path):
-    with open(image_path, "rb") as f:
-        img_bytes = f.read()
-    uploaded = client.com.atproto.repo.upload_blob(img_bytes, "image/png")
-    image_blob = uploaded.blob
+image_blob_ref = None
+if img_path and os.path.exists(img_path):
+    with open(img_path, "rb") as f:
+        b = f.read()
+    uploaded = client.com.atproto.repo.upload_blob(b, "image/png")
+    image_blob_ref = uploaded.blob
 
-embed = None
-if image_blob:
-    embed = AppBskyEmbedImages.Main(
+images_embed = None
+if image_blob_ref:
+    images_embed = AppBskyEmbedImages.Main(
         images=[
             AppBskyEmbedImages.Image(
-                image=image_blob,
+                image=image_blob_ref,
                 alt="Imagen generada por el robot"
             )
         ]
     )
 
-record = AppBskyFeedPost.Record(
-    text=post_text,
-    embed=embed
-)
-
-resp = client.app.bsky.feed.post.create(
-    repo=client.me.did,
-    record=record
-)
-
-print("Post published:", resp)
+record = AppBskyFeedPost.Record(text=text, embed=images_embed)
+resp = client.app.bsky.feed.post.create(repo=client.me.did, record=record)
+print("Post created:", resp)
 PY
