@@ -1,64 +1,43 @@
-      - name: Publish to Bluesky
-        if: always()
-        env:
-          BLUESKY_USERNAME: ${{ secrets.BLUESKY_USERNAME }}
-          BLUESKY_PASSWORD: ${{ secrets.BLUESKY_PASSWORD }}
+name: Ejecutar Robot Anomalias
+permissions:
+  contents: write
+
+on:
+  schedule:
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+
+jobs:
+  run-robot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.9"
+
+      - name: Install dependencies
         run: |
-          pip install atproto
-          python3 - <<'PY'
-import os
-from atproto import Client
-from atproto.models import AppBskyFeedPost, AppBskyEmbedImages
+          python -m pip install --upgrade pip
+          pip install requests pandas gspread oauth2client gspread_dataframe db-dtypes google-api-python-client openpyxl
 
-handle = os.environ.get("BLUESKY_USERNAME")
-app_password = os.environ.get("BLUESKY_PASSWORD")
+      - name: Run robot script
+        env:
+          API_KEY: ${{ secrets.API_KEY }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: |
+          python run_robot2.py
 
-if not handle or not app_password:
-    print("No Bluesky credentials configured. Skipping publish.")
-    exit(0)
-
-text_path = "last_post_for_bluesky.txt"
-imgref_path = "last_post_image.txt"
-
-if not os.path.exists(text_path):
-    print("No text for Bluesky, skipping.")
-    exit(0)
-
-text = open(text_path, "r", encoding="utf-8").read().strip()
-
-img_path = None
-if os.path.exists(imgref_path):
-    v = open(imgref_path, "r", encoding="utf-8").read().strip()
-    if v:
-        img_path = v
-
-client = Client()
-client.login(handle, app_password)
-print("Logged in:", client.me.did)
-
-image_blob_ref = None
-if img_path and os.path.exists(img_path):
-    with open(img_path, "rb") as f:
-        b = f.read()
-    uploaded = client.com.atproto.repo.upload_blob(b, "image/png")
-    image_blob_ref = uploaded.blob
-
-images_embed = None
-if image_blob_ref:
-    images_embed = AppBskyEmbedImages.Main(
-        images=[
-            AppBskyEmbedImages.Image(
-                image=image_blob_ref,
-                alt="Imagen generada por el robot"
-            )
-        ]
-    )
-
-record = AppBskyFeedPost.Record(text=text, embed=images_embed)
-resp = client.app.bsky.feed.post.create(
-    repo=client.me.did,
-    record=record
-)
-
-print("Post created:", resp)
-PY
+      - name: Commit and push changes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Actualizar archivo de anomalías automáticamente" || echo "No hay cambios para commitear"
+          git push
