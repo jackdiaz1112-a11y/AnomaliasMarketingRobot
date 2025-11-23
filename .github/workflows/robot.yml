@@ -41,10 +41,9 @@ jobs:
           BLUESKY_PASSWORD: ${{ secrets.BLUESKY_PASSWORD }}
         run: |
           pip install atproto
-          python3 - <<'PY'
+          python3 <<'PY'
 import os
 from atproto import Client, models
-import base64
 
 handle = os.environ.get("BLUESKY_USERNAME")
 app_password = os.environ.get("BLUESKY_PASSWORD")
