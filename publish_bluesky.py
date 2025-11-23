@@ -1,50 +1,65 @@
-
-#!/usr/bin/env python3
-# publish_bluesky.py - Publica lo generado en Bluesky usando atproto
 import os
-from pathlib import Path
-from atproto import Client
-from atproto.models import AppBskyFeedPost, AppBskyEmbedImages
+from atproto import Client, models
 
+# Credenciales desde secrets
 handle = os.environ.get("BLUESKY_USERNAME")
 app_password = os.environ.get("BLUESKY_PASSWORD")
 
 if not handle or not app_password:
-    print("No Bluesky credentials in env. Exiting.")
+    print("No Bluesky credentials configured. Skipping publish.")
     exit(0)
 
-text_path = Path("last_post_for_bluesky.txt")
-img_ref_path = Path("last_post_image.txt")
+# Archivos generados por robot.py
+text_path = "last_post_for_bluesky.txt"
+imgref_path = "last_post_image.txt"
 
-if not text_path.exists():
-    print("No last_post_for_bluesky.txt found. Exiting.")
+if not os.path.exists(text_path):
+    print("No text for Bluesky, skipping.")
     exit(0)
 
-text = text_path.read_text(encoding="utf-8").strip()
+text = open(text_path, "r", encoding="utf-8").read().strip()
 
+# Imagen opcional
+img_path = None
+if os.path.exists(imgref_path):
+    v = open(imgref_path, "r", encoding="utf-8").read().strip()
+    if v:
+        img_path = v
+
+# Conectar con Bluesky
+client = Client()
+client.login(handle, app_password)
+print("Logged in as:", client.me.handle)
+
+# Subir imagen si existe
 image_blob_ref = None
-if img_ref_path.exists():
-    img = img_ref_path.read_text(encoding="utf-8").strip()
-    if img and Path(img).exists():
-        with open(img, "rb") as f:
-            b = f.read()
-        client = Client()
-        client.login(handle, app_password)
-        uploaded = client.com.atproto.repo.upload_blob(b, "image/png")
-        image_blob_ref = uploaded.blob
-    else:
-        client = Client()
-        client.login(handle, app_password)
-else:
-    client = Client()
-    client.login(handle, app_password)
+if img_path and os.path.exists(img_path):
+    with open(img_path, "rb") as f:
+        img_bytes = f.read()
 
+    uploaded = client.com.atproto.repo.upload_blob(img_bytes, "image/png")
+    image_blob_ref = uploaded.blob
+
+# Crear post
 images_embed = None
 if image_blob_ref:
-    images_embed = AppBskyEmbedImages.Main(
-        images=[AppBskyEmbedImages.Image(image=image_blob_ref, alt="Imagen generada por robot")]
+    images_embed = models.AppBskyEmbedImages.Main(
+        images=[
+            models.AppBskyEmbedImages.Image(
+                image=image_blob_ref,
+                alt="Imagen generada automáticamente"
+            )
+        ]
     )
 
-record = AppBskyFeedPost.Record(text=text, embed=images_embed)
-resp = client.app.bsky.feed.post.create(repo=client.me.did, record=record)
-print("Posted to Bluesky:", resp)
+record = models.AppBskyFeedPost.Record(
+    text=text,
+    embed=images_embed
+)
+
+resp = client.app.bsky.feed.post.create(
+    repo=client.me.did,
+    record=record
+)
+
+print("Post created:", resp)
