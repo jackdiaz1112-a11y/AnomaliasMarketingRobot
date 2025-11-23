@@ -42,7 +42,7 @@ jobs:
         run: |
           pip install atproto
           python3 - <<'PY'
-import os
+commit_message: "Resultados automáticos del robot - $(date +'%Y%m%d_%H%M')"
 from atproto import Client, models
 import base64, json
 
