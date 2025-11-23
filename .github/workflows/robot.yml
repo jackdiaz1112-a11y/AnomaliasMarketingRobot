@@ -4,7 +4,7 @@ permissions:
 
 on:
   schedule:
-    - cron: "0 13 * * *"
+    - cron: "0 13 * * *"   # ejecuta todos los días a las 13 UTC
   workflow_dispatch:
 
 jobs:
@@ -12,32 +12,104 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1) Obtener el repositorio
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
+      # 2) Configurar Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.9"
+          python-version: "3.10"
 
+      # 3) Instalar dependencias
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests pandas gspread oauth2client gspread_dataframe db-dtypes google-api-python-client openpyxl
+          pip install -r requirements.txt
+          pip install atproto   # requerido para Bluesky
 
+      # 4) Ejecutar tu robot
       - name: Run robot script
         env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           API_KEY: ${{ secrets.API_KEY }}
-          SHEET_ID: ${{ secrets.SHEET_ID }}
-        run: |
-          python run_robot2.py
+        run: python robot.py
 
-      - name: Commit and push changes
+      # 5) Commit si se generaron archivos nuevos
+      - name: Commit generated files
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "Robot actualizado – build ${{ github.run_id }}"
+
+      # 6) Publicar en Bluesky
+      - name: Publish to Bluesky
+        if: always()
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BLUESKY_USERNAME: ${{ secrets.BLUESKY_USERNAME }}
+          BLUESKY_PASSWORD: ${{ secrets.BLUESKY_PASSWORD }}
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Actualizar archivo de anomalías automáticamente" || echo "No hay cambios para commitear"
-          git push
+          python3 - <<'PY'
+import os
+from atproto import Client
+from atproto.models import AppBskyFeedPost, AppBskyEmbedImages
+
+# Credenciales
+handle = os.environ.get("BLUESKY_USERNAME")
+app_password = os.environ.get("BLUESKY_PASSWORD")
+
+if not handle or not app_password:
+    print("No Bluesky credentials. Skipping.")
+    exit(0)
+
+# Archivos generados por el robot
+text_path = "last_post_for_bluesky.txt"
+image_ref_path = "last_post_image.txt"
+
+if not os.path.exists(text_path):
+    print("No text file found. Aborting Bluesky post.")
+    exit(0)
+
+post_text = open(text_path, "r", encoding="utf-8").read().strip()
+
+# Leer imagen si existe
+image_path = None
+if os.path.exists(image_ref_path):
+    v = open(image_ref_path, "r", encoding="utf-8").read().strip()
+    if v:
+        image_path = v
+
+client = Client()
+client.login(handle, app_password)
+print("Logged in as:", client.me.handle)
+
+image_blob = None
+if image_path and os.path.exists(image_path):
+    with open(image_path, "rb") as f:
+        img_bytes = f.read()
+    uploaded = client.com.atproto.repo.upload_blob(img_bytes, "image/png")
+    image_blob = uploaded.blob
+
+embed = None
+if image_blob:
+    embed = AppBskyEmbedImages.Main(
+        images=[
+            AppBskyEmbedImages.Image(
+                image=image_blob,
+                alt="Imagen generada por el robot"
+            )
+        ]
+    )
+
+record = AppBskyFeedPost.Record(
+    text=post_text,
+    embed=embed
+)
+
+resp = client.app.bsky.feed.post.create(
+    repo=client.me.did,
+    record=record
+)
+
+print("Post published:", resp)
+PY
