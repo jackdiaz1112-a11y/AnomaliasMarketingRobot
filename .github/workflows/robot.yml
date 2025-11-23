@@ -5,7 +5,7 @@
           BLUESKY_PASSWORD: ${{ secrets.BLUESKY_PASSWORD }}
         run: |
           pip install atproto
-          python << 'PY'
+          python3 - <<'PY'
 import os
 from atproto import Client
 from atproto.models import AppBskyFeedPost, AppBskyEmbedImages
