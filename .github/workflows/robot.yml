@@ -1,5 +1,4 @@
 name: Ejecutar Robot Anomalias
-
 permissions:
   contents: write
 
@@ -19,20 +18,28 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.10"
+          python-version: "3.9"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install atproto
-          pip install -r requirements.txt
+          pip install requests pandas gspread oauth2client gspread_dataframe db-dtypes google-api-python-client openpyxl atproto
 
       - name: Run robot script
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python robot.py
+          API_KEY: ${{ secrets.API_KEY }}
+          HF_API_TOKEN: ${{ secrets.HF_API_TOKEN }}
+          BEACONS_URL: ${{ secrets.BEACONS_URL }}
+        run: |
+          python robot.py
 
-      - name: Commit generated files
+      - name: Save result artifacts
+        run: |
+          echo "Guardando resultados..."
+          cp output_text.txt last_post_for_bluesky.txt || true
+          cp output_image.jpg last_post_image.jpg || true
+
+      - name: Auto-commit results
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
           commit_message: "Resultados automáticos del robot – build ${{ github.run_id }}"
@@ -46,7 +53,8 @@ jobs:
           python3 - <<'PY'
 import os
 from atproto import Client
-from atproto.models import AppBskyFeedPost, AppBskyEmbedImages
+from atproto.models.app.bsky.embed.images import Main as ImageEmbed, Image as ImageItem
+from atproto.models.app.bsky.feed.post import Main as Post
 
 handle = os.environ.get("BLUESKY_USERNAME")
 app_password = os.environ.get("BLUESKY_PASSWORD")
@@ -56,51 +64,26 @@ if not handle or not app_password:
     exit(0)
 
 text_path = "last_post_for_bluesky.txt"
-imgref_path = "last_post_image.txt"
+img_path = "last_post_image.jpg"
 
 if not os.path.exists(text_path):
-    print("No text for Bluesky — skipping.")
+    print("No text file to publish. Skipping.")
     exit(0)
 
-text = open(text_path, "r", encoding="utf-8").read().strip()
-
-img_path = None
-if os.path.exists(imgref_path):
-    v = open(imgref_path, "r", encoding="utf-8").read().strip()
-    if v:
-        img_path = v
+with open(text_path, "r", encoding="utf-8") as f:
+    text = f.read().strip()
 
 client = Client()
 client.login(handle, app_password)
-print("Logged in:", client.me.did)
 
-image_blob_ref = None
-if img_path and os.path.exists(img_path):
-    with open(img_path, "rb") as f:
-        b = f.read()
-    uploaded = client.com.atproto.repo.upload_blob(b, "image/png")
-    image_blob_ref = uploaded.blob
+if os.path.exists(img_path):
+    with open(img_path, "rb") as img_file:
+        uploaded = client.upload_blob(img_file.read())
+    embed = ImageEmbed(images=[ImageItem(alt="Robot Image", image=uploaded.blob)])
+    post = Post(text=text, embed=embed)
+else:
+    post = Post(text=text)
 
-images_embed = None
-if image_blob_ref:
-    images_embed = AppBskyEmbedImages.Main(
-        images=[
-            AppBskyEmbedImages.Image(
-                image=image_blob_ref,
-                alt="Imagen generada por el robot"
-            )
-        ]
-    )
-
-record = AppBskyFeedPost.Record(
-    text=text,
-    embed=images_embed
-)
-
-resp = client.app.bsky.feed.post.create(
-    repo=client.me.did,
-    record=record
-)
-
-print("Post created:", resp)
+client.send_post(post)
+print("Bluesky post published successfully.")
 PY
