@@ -1,80 +1,71 @@
 #!/usr/bin/env python3
-# robot.py - Generador y preparador de posts (genera copys, imágenes, last_post_for_bluesky.txt)
+# robot.py - Generador de copys e imágenes para autopublicación
 import os
 import json
 import datetime
 import random
+import base64
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
-# --- util ---
-def now_ts():
-    return datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-
-def safe_mkdir(p):
-    Path(p).mkdir(parents=True, exist_ok=True)
-
-# --- cargar config ---
+# ----- Config -----
+ROOT = Path(".")
 with open("config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
 
-books = list(config.get("books", {}).items())  # list of (title, meta)
+books = list(config.get("books", {}).items())
 copies_per_run = config.get("generation", {}).get("copies_per_run", 3)
-images_per_run = config.get("generation", {}).get("images_per_run", 2)
+images_per_run = config.get("generation", {}).get("images_per_run", 1)
 paths = config.get("output_paths", {})
 COPYS_DIR = Path(paths.get("copys_dir", "generated_copys"))
 IMAGES_DIR = Path(paths.get("images_dir", "generated_images"))
 LOGS_DIR = Path(paths.get("logs_dir", "logs"))
 STATE_DIR = Path(paths.get("state_dir", "state"))
-
 BEACONS_URL = config.get("beacons_url", "").strip()
-
-PUBLICATION_MODE = config.get("publication", {}).get("mode", "alternate")  # alternate/random/single
-DEFAULT_BOOK = config.get("publication", {}).get("default_book_for_bluesky", None)
-
-safe_mkdir(COPYS_DIR)
-safe_mkdir(IMAGES_DIR)
-safe_mkdir(LOGS_DIR)
-safe_mkdir(STATE_DIR)
 
 HF_TOKEN = os.environ.get("HF_TOKEN", None)
 
-# --- helper para UTM por libro ---
+# Ensure dirs
+for p in [COPYS_DIR, IMAGES_DIR, LOGS_DIR, STATE_DIR]:
+    p.mkdir(parents=True, exist_ok=True)
+
+ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+# Utility: beacons link with UTM per book
 def beacons_link_for(book_key):
     base = BEACONS_URL
-    meta = config["books"].get(book_key, {})
+    meta = dict(config.get("books", {})).get(book_key, {})
     campaign = meta.get("utm_campaign", book_key.replace(" ", "_"))
     if "?" in base:
         return f"{base}&utm_source=robot&utm_medium=post&utm_campaign={campaign}"
-    else:
-        return f"{base}?utm_source=robot&utm_medium=post&utm_campaign={campaign}"
+    return f"{base}?utm_source=robot&utm_medium=post&utm_campaign={campaign}"
 
-# --- elegir libro a publicar (alternar) ---
+# Pick book (alternate mode)
 def load_last_index():
-    lf = STATE_DIR / "last_book_index.txt"
-    if lf.exists():
+    p = STATE_DIR / "last_book_index.txt"
+    if p.exists():
         try:
-            return int(lf.read_text().strip())
+            return int(p.read_text().strip())
         except:
             return -1
     return -1
 
 def save_last_index(i):
-    lf = STATE_DIR / "last_book_index.txt"
-    lf.write_text(str(i))
+    (STATE_DIR / "last_book_index.txt").write_text(str(i))
 
 def pick_book_index():
     n = len(books)
     if n == 0:
         return None
-    if PUBLICATION_MODE == "random":
+    mode = config.get("publication", {}).get("mode", "alternate")
+    if mode == "random":
         return random.randint(0, n-1)
-    if PUBLICATION_MODE == "single":
-        # use default book if set, else index 0
-        if DEFAULT_BOOK:
+    if mode == "single":
+        default = config.get("publication", {}).get("default_book_for_bluesky")
+        if default:
             keys = [k for k,_ in books]
             try:
-                return keys.index(DEFAULT_BOOK)
+                return keys.index(default)
             except:
                 return 0
         return 0
@@ -84,35 +75,75 @@ def pick_book_index():
     save_last_index(nexti)
     return nexti
 
-# --- generar copies ---
-def append_beacons_link(text, book_key, short=False):
-    link = beacons_link_for(book_key)
-    if short:
-        return text + f"\n\n→ {link}"
-    else:
-        return text + f"\n\nLee más y descubre la serie 'Anomalías de la Realidad': {link}"
+# HF Inference API helpers (text and image)
+HF_INFERENCE_URL = "https://api-inference.huggingface.co/models/"
 
-def generar_copy_simple(libro, descripcion):
-    hooks = [
-        "No eres el error. Quizá es el sistema.",
-        "¿Qué falla: tú o la estructura que te rodea?",
-        "Ideas inquietantes para mentes inquietas.",
-        "Una invitación a pensar de forma diferente."
-    ]
-    hook = random.choice(hooks)
-    short = f"{hook}\n\n{descripcion}\n\nLink en bio."
-    long = f"{hook}\n\n{descripcion}\n\nSi te interesa profundizar, revisa el libro completo en Amazon."
-    short = append_beacons_link(short, libro, short=True)
-    long = append_beacons_link(long, libro, short=False)
-    return {"short": short, "long": long}
+def hf_text_generate(prompt, models_to_try=None, max_tokens=200):
+    if not HF_TOKEN:
+        return None
+    headers = {"Authorization": f"Bearer {HF_TOKEN}", "Accept": "application/json"}
+    if models_to_try is None:
+        models_to_try = ["mistralai/Mistral-7B-Instruct", "google/flan-ul2", "bigscience/bloomz"]
+    for model in models_to_try:
+        try:
+            import requests, json as _js
+            url = HF_INFERENCE_URL + model
+            payload = {"inputs": prompt, "parameters": {"max_new_tokens": max_tokens}}
+            resp = requests.post(url, headers=headers, json=payload, timeout=30)
+            if resp.status_code == 200:
+                j = resp.json()
+                # Inference API may return text in different shapes
+                if isinstance(j, dict) and "generated_text" in j:
+                    return j["generated_text"]
+                if isinstance(j, list) and len(j) > 0 and "generated_text" in j[0]:
+                    return j[0]["generated_text"]
+                # Try raw string
+                if isinstance(j, str):
+                    return j
+                # else try to extract string
+                return str(j)
+            else:
+                # try next model
+                continue
+        except Exception as e:
+            continue
+    return None
 
-# --- imágenes: SD si hay token, fallback con PIL. Conservo la imagen base y genero 3 tamaños ---
-def generar_imagen_placeholder(libro, prompt, out_path):
+def hf_image_generate(prompt, model="stabilityai/stable-diffusion-2"):
+    if not HF_TOKEN:
+        return None
+    import requests
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    url = HF_INFERENCE_URL + model
+    try:
+        payload = {"inputs": prompt}
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)
+        if resp.status_code == 200:
+            # response may be bytes -> save
+            content_type = resp.headers.get("content-type","")
+            if "image" in content_type:
+                return resp.content
+            # sometimes returns json with base64
+            j = resp.json()
+            # if 'image' field base64
+            for key in ("image","images","generated_image"):
+                if key in j:
+                    b64 = j[key]
+                    return base64.b64decode(b64)
+            # fallback: try first item's 'blob' field
+            if isinstance(j, list) and j and "blob" in j[0]:
+                return base64.b64decode(j[0]["blob"])
+        return None
+    except Exception:
+        return None
+
+# Placeholder image generator
+def placeholder_image(book_key, prompt, out_path):
     try:
         W, H = 2048, 1152
         img = Image.new("RGB", (W, H), color=(18, 20, 26))
         draw = ImageDraw.Draw(img)
-        text = f"{libro}\n\n{prompt[:240]}"
+        text = f"{book_key}\n\n{prompt[:300]}"
         try:
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
         except:
@@ -120,132 +151,108 @@ def generar_imagen_placeholder(libro, prompt, out_path):
         draw.multiline_text((40,40), text, fill=(230,230,230), font=font)
         img.save(out_path, format="PNG")
         return out_path
-    except Exception as e:
-        print("Placeholder failed:", e)
+    except Exception:
         return None
 
-def generate_resized_versions(src_path, dest_base):
-    # produce 1:1, 16:9, 9:16
+# Compose copy
+def compose_copies(book_key, description):
+    hooks = [
+        "No eres el error. Quizá es el sistema.",
+        "¿Qué falla, tú o la estructura que te rodea?",
+        "Ideas inquietantes para mentes inquietas.",
+        "Una invitación a pensar distinto."
+    ]
+    hook = random.choice(hooks)
+    prompt = f"Escribe un copy corto y efectivo para redes sociales (20-40 palabras) sobre el libro '{book_key}' describiéndolo así: {description}. Termina con una llamada a la acción que invite a visitar el link en bio."
+    # try hf
+    text_try = hf_text_generate(prompt, max_tokens=80)
+    if text_try:
+        short = text_try.strip()
+    else:
+        short = f"{hook} {description[:140]} — Lee más en el link en bio."
+    # long form
+    prompt2 = f"Escribe un texto más largo (50-140 palabras) sobre el libro '{book_key}' con tono inquietante y filosófico, incluye una CTA para visitar el link en bio."
+    text_try2 = hf_text_generate(prompt2, max_tokens=180)
+    if text_try2:
+        long = text_try2.strip()
+    else:
+        long = f"{hook}\n\n{description}\n\nSi quieres profundizar, visita el link en bio."
+    # append beacons link
+    link = beacons_link_for(book_key)
+    short = f"{short}\n\n→ {link}"
+    long = f"{long}\n\nLee más: {link}"
+    return {"short": short, "long": long}
+
+# Main: pick book, generate copies and image, save last_post files
+def main():
+    idx = pick_book_index()
+    if idx is None:
+        print("No books configured.")
+        return
+    book_key, meta = books[idx]
+    description = meta.get("descripcion", "")
+    print("Selected book:", book_key)
+
+    # generate copies
+    copys_file = COPYS_DIR / f"{book_key.replace(' ', '_')}.txt"
+    with open(copys_file, "a", encoding="utf-8") as cf:
+        for _ in range(copies_per_run):
+            c = compose_copies(book_key, description)
+            cf.write(f"[{ts}] SHORT:\n{c['short']}\n\nLONG:\n{c['long']}\n\n---\n")
+            print("Wrote copy for", book_key)
+
+    # generate image
+    book_img_dir = IMAGES_DIR / book_key.replace(" ", "_")
+    book_img_dir.mkdir(parents=True, exist_ok=True)
+    generated_image_path = None
+    for i in range(images_per_run):
+        prompt = f"Book cover concept, dark elegant, philosophical, minimal, for the book titled '{book_key}': {description}"
+        img_bytes = hf_image_generate(prompt)
+        filename = book_img_dir / f"{book_key.replace(' ','_')}_{ts}_{i+1}.png"
+        if img_bytes:
+            try:
+                with open(filename, "wb") as f:
+                    f.write(img_bytes)
+                generated_image_path = str(filename)
+            except Exception:
+                generated_image_path = None
+        if not generated_image_path:
+            # fallback placeholder
+            ph = placeholder_image(book_key, prompt, str(filename))
+            if ph:
+                generated_image_path = ph
+        print("Image saved:", generated_image_path)
+
+    # prepare last_post_for_bluesky.txt and last_post_image.txt
+    # pick last short from file
+    last_short = None
     try:
-        img = Image.open(src_path).convert("RGB")
-        sizes = {
-            "square": (1080,1080),
-            "wide": (1920,1080),
-            "tall": (1080,1920)
-        }
-        out_paths = {}
-        for k,s in sizes.items():
-            im2 = img.copy()
-            im2.thumbnail(s, Image.LANCZOS)
-            # create canvas to exact size (center)
-            canvas = Image.new("RGB", s, (10,10,12))
-            x = (s[0]-im2.size[0])//2
-            y = (s[1]-im2.size[1])//2
-            canvas.paste(im2, (x,y))
-            p = f"{dest_base}_{k}.png"
-            canvas.save(p, format="PNG")
-            out_paths[k] = p
-        return out_paths
-    except Exception as e:
-        print("generate_resized_versions error:", e)
-        return {}
+        with open(copys_file, "r", encoding="utf-8") as cf:
+            content = cf.read().strip().split("\n\n---\n")
+            if content:
+                last_block = content[-1]
+                if "SHORT:" in last_block:
+                    part = last_block.split("SHORT:")[1]
+                    if "LONG:" in part:
+                        part = part.split("LONG:")[0]
+                    last_short = part.strip()
+    except Exception:
+        last_short = None
 
-def generar_imagen_sd(libro, prompt, out_path):
-    try:
-        from diffusers import StableDiffusionPipeline
-        import torch
-        model_id = "runwayml/stable-diffusion-v1-5"
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        pipe = StableDiffusionPipeline.from_pretrained(model_id, use_auth_token=HF_TOKEN)
-        pipe = pipe.to(device)
-        image = pipe(prompt, num_inference_steps=25, guidance_scale=7.5).images[0]
-        image.save(out_path)
-        return out_path
-    except Exception as exc:
-        print("SD generation failed:", exc)
-        return None
+    if not last_short:
+        last_short = compose_copies(book_key, description)["short"]
 
-# --- main ---
-timestamp = now_ts()
-log_lines = []
-selected_idx = pick_book_index()
-if selected_idx is None:
-    print("No books configured.")
-    exit(0)
+    with open("last_post_for_bluesky.txt", "w", encoding="utf-8") as lf:
+        lf.write(last_short + "\n")
 
-book_key, meta = books[selected_idx]
-descripcion = meta.get("descripcion", "")
-print(f"[{timestamp}] Procesando libro seleccionado para publicación: {book_key}")
+    with open("last_post_image.txt", "w", encoding="utf-8") as lf:
+        lf.write(generated_image_path or "")
 
-# ensure copys file
-copys_file = COPYS_DIR / f"{book_key.replace(' ','_')}.txt"
-with open(copys_file, "a", encoding="utf-8") as cf:
-    for i in range(copies_per_run):
-        c = generar_copy_simple(book_key, descripcion)
-        cf.write(f"[{timestamp}] SHORT:\n{c['short']}\n\nLONG:\n{c['long']}\n\n---\n")
-        print("Copy generado para", book_key)
+    # log
+    logf = LOGS_DIR / f"log_{ts}.txt"
+    with open(logf, "w", encoding="utf-8") as lg:
+        lg.write(f"{ts} - {book_key} - copies:{copies_per_run} images:{images_per_run}\n")
+    print("Finished. last_post_for_bluesky.txt and last_post_image.txt created.")
 
-# generar imagen(es)
-book_img_dir = IMAGES_DIR / book_key.replace(' ','_')
-safe_mkdir(book_img_dir)
-generated_images = []
-for i in range(images_per_run):
-    prompt = f"Conceptual elegant book cover, dark elegant, philosophical, {book_key}, {descripcion}"
-    filename_base = f"{book_img_dir}/{book_key.replace(' ','_')}_{timestamp}_{i+1}"
-    out_path = f"{filename_base}_base.png"
-    saved = None
-    if HF_TOKEN:
-        saved = generar_imagen_sd(book_key, prompt, out_path)
-    if not saved:
-        saved = generar_imagen_placeholder(book_key, prompt, out_path)
-    if saved:
-        generated_images.append(saved)
-        resized = generate_resized_versions(saved, filename_base)
-        # add also resized to list (prioritize square for posts)
-        if "square" in resized:
-            generated_images.append(resized["square"])
-    print("Imagen guardada en:", saved)
-
-# preparar last_post_for_bluesky.txt (primer short + primera imagen si existe)
-last_text = None
-with open(copys_file, "r", encoding="utf-8") as cf:
-    content = cf.read().strip().split("\n\n---\n")
-    # pick last block
-    if content:
-        last_block = content[-1]
-        # extract SHORT part
-        if "SHORT:" in last_block:
-            parts = last_block.split("SHORT:")
-            if len(parts) > 1:
-                txt = parts[1].strip()
-                # take first paragraph lines until LONG:
-                if "LONG:" in txt:
-                    txt = txt.split("LONG:")[0].strip()
-                last_text = txt
-
-if last_text is None:
-    last_text = generar_copy_simple(book_key, descripcion)['short']
-
-with open("last_post_for_bluesky.txt", "w", encoding="utf-8") as lf:
-    lf.write(last_text + "\n")
-
-# attach image path for Bluesky (choose first square or base)
-image_for_bluesky = None
-for p in generated_images:
-    if p and p.endswith("_square.png"):
-        image_for_bluesky = p
-        break
-if not image_for_bluesky and generated_images:
-    image_for_bluesky = generated_images[0]
-
-with open("last_post_image.txt", "w", encoding="utf-8") as lf:
-    lf.write(image_for_bluesky or "")
-
-log_lines.append(f"{timestamp} - {book_key} - copies:{copies_per_run} images:{len(generated_images)}")
-logfile = LOGS_DIR / f"log_{timestamp}.txt"
-with open(logfile, "w", encoding="utf-8") as lf:
-    lf.write("\n".join(log_lines))
-
-print("Robot finalizado. Logs en:", logfile)
-print("Last text file:", "last_post_for_bluesky.txt")
-print("Last image reference:", image_for_bluesky or "NONE")
+if __name__ == "__main__":
+    main()
