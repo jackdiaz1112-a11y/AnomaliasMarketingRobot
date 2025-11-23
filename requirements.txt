@@ -1,7 +1,4 @@
-diffusers>=0.18.0
-transformers>=4.0.0
-accelerate
-torch
-safetensors
-pillow
+requests
+Pillow
+python-dotenv
 atproto
