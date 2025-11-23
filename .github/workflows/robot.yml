@@ -1,39 +1,3 @@
-name: Ejecutar Robot Anomalias
-
-permissions:
-  contents: write
-
-on:
-  schedule:
-    - cron: "0 13 * * *"   # corre todos los días a las 13:00 UTC
-  workflow_dispatch:
-
-jobs:
-  run-robot:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run robot (generate content)
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python robot.py
-
-      - name: Commit generated files (if any)
-        uses: stefanzweifel/git-auto-commit-action@v4
-        with:
-          commit_message: "Resultados automáticos del robot – build ${{ github.run_id }}"
-
       - name: Publish to Bluesky
         if: always()
         env:
@@ -41,9 +5,10 @@ jobs:
           BLUESKY_PASSWORD: ${{ secrets.BLUESKY_PASSWORD }}
         run: |
           pip install atproto
-          python3 <<'PY'
+          python << 'PY'
 import os
-from atproto import Client, models
+from atproto import Client
+from atproto.models import AppBskyFeedPost, AppBskyEmbedImages
 
 handle = os.environ.get("BLUESKY_USERNAME")
 app_password = os.environ.get("BLUESKY_PASSWORD")
@@ -78,18 +43,22 @@ if img_path and os.path.exists(img_path):
     uploaded = client.com.atproto.repo.upload_blob(b, "image/png")
     image_blob_ref = uploaded.blob
 
-from atproto.models import AppBskyFeedPost, AppBskyEmbedImages
-
 images_embed = None
 if image_blob_ref:
     images_embed = AppBskyEmbedImages.Main(
-        images=[AppBskyEmbedImages.Image(
-            image=image_blob_ref,
-            alt="Imagen generada por el robot"
-        )]
+        images=[
+            AppBskyEmbedImages.Image(
+                image=image_blob_ref,
+                alt="Imagen generada por el robot"
+            )
+        ]
     )
 
 record = AppBskyFeedPost.Record(text=text, embed=images_embed)
-resp = client.app.bsky.feed.post.create(repo=client.me.did, record=record)
+resp = client.app.bsky.feed.post.create(
+    repo=client.me.did,
+    record=record
+)
+
 print("Post created:", resp)
 PY
