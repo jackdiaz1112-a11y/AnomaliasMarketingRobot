@@ -1,192 +1,334 @@
 #!/usr/bin/env python3
-# robot.py - Generador de textos e imágenes para publicaciones automatizadas
+# robot.py - Generador de copys e imágenes
 
-import os
-import json
-import datetime
-import random
-import base64
+import os, json, datetime, random, base64, io
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
-# -------------------------------
-# Cargar configuración
-# -------------------------------
+# --- Cargar config ---
 with open("config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
 
-BOOKS = config["books"]
-HF_TOKEN = os.environ.get("HF_TOKEN")
+books = list(config.get("books", {}).items())
+copies_per_run = config.get("generation", {}).get("copies_per_run", 3)
+images_per_run = config.get("generation", {}).get("images_per_run", 1)
+paths = config.get("output_paths", {})
 
-OUTPUT_DIR = Path("generated_images")
-OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
+COPYS_DIR = Path(paths.get("copys_dir", "generated_copys"))
+IMAGES_DIR = Path(paths.get("images_dir", "generated_images"))
+LOGS_DIR = Path(paths.get("logs_dir", "logs"))
+STATE_DIR = Path(paths.get("state_dir", "state"))
 
-# -------------------------------
-# Función mejorada: Hugging Face Image Generation
-# -------------------------------
-def hf_image_generate(prompt, model="stabilityai/stable-diffusion-xl-base-1.0"):
-    """
-    Intenta generar una imagen mediante Hugging Face.
-    Devuelve bytes de imagen PNG o None en caso de error.
-    """
+BEACONS_URL = config.get("beacons_url", "").strip()
+HF_TOKEN = os.environ.get("HF_TOKEN", None)
 
+# Asegurar dirs
+for d in (COPYS_DIR, IMAGES_DIR, LOGS_DIR, STATE_DIR):
+    d.mkdir(parents=True, exist_ok=True)
+
+
+# --------------------------
+#   Helpers
+# --------------------------
+
+def beacons_link_for(book_key):
+    base = BEACONS_URL
+    meta = dict(config.get("books", {})).get(book_key, {})
+    campaign = meta.get("utm_campaign", book_key.replace(" ", "_"))
+    if "?" in base:
+        return f"{base}&utm_source=robot&utm_medium=post&utm_campaign={campaign}"
+    return f"{base}?utm_source=robot&utm_medium=post&utm_campaign={campaign}"
+
+
+def load_last_index():
+    p = STATE_DIR / "last_book_index.txt"
+    if p.exists():
+        try:
+            return int(p.read_text().strip())
+        except:
+            return -1
+    return -1
+
+
+def save_last_index(i):
+    (STATE_DIR / "last_book_index.txt").write_text(str(i))
+
+
+def pick_book_index():
+    n = len(books)
+    if n == 0:
+        return None
+
+    mode = config.get("publication", {}).get("mode", "alternate")
+
+    if mode == "random":
+        return random.randint(0, n - 1)
+
+    if mode == "single":
+        default = config.get("publication", {}).get("default_book_for_bluesky")
+        if default:
+            keys = [k for k, _ in books]
+            try:
+                return keys.index(default)
+            except:
+                return 0
+        return 0
+
+    # modo alternado
+    last = load_last_index()
+    nexti = (last + 1) % n
+    save_last_index(nexti)
+    return nexti
+
+
+# --------------------------
+#   Hugging Face API
+# --------------------------
+
+HF_API_BASE = "https://api-inference.huggingface.co/models/"
+
+def hf_text_generate(prompt, models=None, max_tokens=200):
     if not HF_TOKEN:
-        print("⚠ No hay HF_TOKEN disponible, usando placeholder.")
         return None
 
     import requests
 
-    url = f"https://api-inference.huggingface.co/models/{model}"
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
 
-    payload = {"inputs": prompt}
+    if models is None:
+        models = [
+            "mistralai/Mistral-7B-Instruct",
+            "google/flan-ul2",
+            "bigscience/bloomz"
+        ]
 
-    try:
-        r = requests.post(url, headers=headers, json=payload, timeout=90)
+    for m in models:
+        try:
+            r = requests.post(
+                HF_API_BASE + m,
+                headers=headers,
+                json={"inputs": prompt, "parameters": {"max_new_tokens": max_tokens}},
+                timeout=30
+            )
+            if r.status_code == 200:
+                j = r.json()
+                if isinstance(j, dict) and "generated_text" in j:
+                    return j["generated_text"]
+                if isinstance(j, list) and j and isinstance(j[0], dict) and "generated_text" in j[0]:
+                    return j[0]["generated_text"]
+                if isinstance(j, str):
+                    return j
+                return str(j)
+        except Exception:
+            continue
 
-        if r.status_code == 200:
-            ctype = r.headers.get("content-type", "")
+    return None
 
-            # Imagen directa
-            if "image" in ctype:
-                return r.content
 
-            # Posibles formatos JSON
-            data = r.json()
-
-            # 1. Chequear claves estándar
-            for key in ("image", "images", "generated_image", "data"):
-                if key in data:
-                    value = data[key]
-
-                    # Caso lista
-                    if isinstance(value, list):
-                        v = value[0]
-                        return base64.b64decode(v)
-
-                    # Caso string base64
-                    if isinstance(value, str):
-                        return base64.b64decode(value)
-
-            print("⚠ Hugging Face devolvió JSON sin imagen válida.")
-            return None
-
-        else:
-            print("⚠ Error en Hugging Face:", r.status_code, r.text[:200])
-            return None
-
-    except Exception as e:
-        print("⚠ Excepción al contactar Hugging Face:", e)
+def hf_image_generate(prompt, model="stabilityai/stable-diffusion-2"):
+    """
+    Devuelve bytes de imagen o None.
+    Evita imágenes vacías/PNG negro.
+    """
+    if not HF_TOKEN:
         return None
 
+    import requests
 
-# -------------------------------
-# Función placeholder mejorada
-# -------------------------------
-def placeholder_image(book_key, prompt, out_path):
-    W, H = 2048, 1152
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
 
     try:
-        img = Image.new("RGB", (W, H), color=(245, 245, 250))
-        draw = ImageDraw.Draw(img)
-
-        # Degradado vertical suave
-        for y in range(H):
-            shade = 245 - int((y / H) * 40)
-            draw.line([(0, y), (W, y)], fill=(shade, shade, shade))
-
-        text = f"{book_key}\n\n{prompt[:300]}"
-
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 42)
-        except:
-            font = ImageFont.load_default()
-
-        draw.multiline_text(
-            (80, 80),
-            text,
-            fill=(20, 20, 20),
-            font=font,
-            spacing=10,
+        r = requests.post(
+            HF_API_BASE + model,
+            headers=headers,
+            json={"inputs": prompt},
+            timeout=60
         )
 
-        img.save(out_path, format="PNG", optimize=True)
-        return out_path
+        if r.status_code != 200:
+            return None
 
-    except Exception as e:
-        print("⚠ Error creando placeholder:", e)
+        content_type = r.headers.get("content-type", "")
+
+        # caso 1: imagen directa
+        if "image" in content_type:
+            img_bytes = r.content
+        else:
+            # caso 2: base64
+            j = r.json()
+            b64 = None
+            for key in ("image", "images", "generated_image", "data"):
+                if key in j:
+                    b64 = j[key]
+                    break
+            if not b64:
+                return None
+            img_bytes = base64.b64decode(b64)
+
+        # evitar PNG negro o vacío
+        try:
+            img = Image.open(io.BytesIO(img_bytes))
+            if img.width < 50 or img.height < 50:
+                return None
+            # si toda la imagen es prácticamente negra, descartamos
+            extrema = img.convert("L").getextrema()
+            if extrema == (0, 0):
+                return None
+        except Exception:
+            return None
+
+        return img_bytes
+
+    except Exception:
         return None
 
 
-# -------------------------------
-# Selección aleatoria del libro
-# -------------------------------
-def pick_book():
-    keys = list(BOOKS.keys())
-    key = random.choice(keys)
-    data = BOOKS[key]
-    return key, data
+def placeholder_image(book_key, prompt, out_path):
+    W, H = 2048, 1152
+    try:
+        img = Image.new("RGB", (W, H), color=(22, 22, 25))
+        draw = ImageDraw.Draw(img)
+        text = f"{book_key}\n\n{prompt[:300]}"
+        try:
+            font = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 26
+            )
+        except:
+            font = ImageFont.load_default()
+        draw.multiline_text((40, 40), text, fill=(230, 230, 230), font=font)
+        img.save(out_path, "PNG")
+        return out_path
+    except Exception:
+        return None
 
 
-# -------------------------------
-# Generar texto para Bluesky
-# -------------------------------
-def build_copy(book_key, book_data):
-    frases = book_data["frases"]
-    frase = random.choice(frases)
+# --------------------------
+#   Copys
+# --------------------------
 
-    hoy = datetime.datetime.now().strftime("%Y-%m-%d")
-    copy = f"Ideas inquietantes para mentes inquietas. {frase}\n\n#{book_key} — {hoy}"
+def compose_copies(book_key, description):
+    hooks = [
+        "No eres el error. Quizá es el sistema.",
+        "¿Qué falla, tú o la estructura que te rodea?",
+        "Ideas inquietantes para mentes inquietas.",
+        "Una invitación a pensar distinto."
+    ]
 
-    return copy
+    hook = random.choice(hooks)
+
+    prompt_short = (
+        f"Escribe un copy corto (20-40 palabras) para redes sobre '{book_key}': "
+        f"{description}. Termina invitando al link en bio."
+    )
+
+    text_short = hf_text_generate(prompt_short, max_tokens=80)
+    if not text_short:
+        text_short = f"{hook} {description[:140]} — Lee más en el link en bio."
+
+    prompt_long = (
+        f"Escribe un texto largo (50-140 palabras) con tono filosófico-inquietante "
+        f"sobre '{book_key}' y una CTA al link en bio."
+    )
+
+    text_long = hf_text_generate(prompt_long, max_tokens=180)
+    if not text_long:
+        text_long = f"{hook}\n\n{description}\n\nSi quieres profundizar, visita el link en bio."
+
+    link = beacons_link_for(book_key)
+
+    short = f"{text_short}\n\n→ {link}"
+    long = f"{text_long}\n\nLee más: {link}"
+
+    return {"short": short, "long": long}
 
 
-# -------------------------------
-# Flujo principal
-# -------------------------------
+# --------------------------
+#   MAIN
+# --------------------------
+
 def main():
-    print("▶ Ejecutando robot.py")
+    idx = pick_book_index()
+    if idx is None:
+        print("No books configured.")
+        return
 
-    book_key, book_data = pick_book()
-    prompt = book_data["prompt"]
+    book_key, meta = books[idx]
+    description = meta.get("descripcion", "")
 
-    # Ruta de imagen
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    img_dir = OUTPUT_DIR / book_key
-    img_dir.mkdir(parents=True, exist_ok=True)
-    img_path = img_dir / f"{book_key}_{ts}.png"
+    ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    print("Selected:", book_key)
 
-    print(f"▶ Libro elegido: {book_key}")
-    print("▶ Generando texto...")
+    # ---- copys ----
+    copys_file = COPYS_DIR / f"{book_key.replace(' ', '_')}.txt"
+    with open(copys_file, "a", encoding="utf-8") as cf:
+        for _ in range(copies_per_run):
+            c = compose_copies(book_key, description)
+            cf.write(f"[{ts}] SHORT:\n{c['short']}\n\nLONG:\n{c['long']}\n\n---\n")
+            print("Wrote copy")
 
-    # Generar texto
-    copy = build_copy(book_key, book_data)
+    # ---- imágenes ----
+    book_img_dir = IMAGES_DIR / book_key.replace(" ", "_")
+    book_img_dir.mkdir(parents=True, exist_ok=True)
 
-    # Guardar texto para Bluesky
-    with open("last_post_for_bluesky.txt", "w", encoding="utf-8") as f:
-        f.write(copy)
+    generated_image = None
 
-    # Intentar generar imagen con Hugging Face
-    print("▶ Generando imagen con Hugging Face...")
-    img_bytes = hf_image_generate(prompt)
+    for i in range(images_per_run):
+        prompt = (
+            f"Book cover concept, dark elegant, minimal, philosophical: "
+            f"'{book_key}' — {description}"
+        )
 
-    if img_bytes:
-        print("✔ Imagen obtenida desde Hugging Face")
-        with open(img_path, "wb") as f:
-            f.write(img_bytes)
-    else:
-        print("⚠ HF falló, usando placeholder")
-        placeholder_image(book_key, prompt, img_path)
+        img_bytes = hf_image_generate(prompt)
 
-    # Registrar ruta para Bluesky
-    with open("last_post_image.txt", "w", encoding="utf-8") as f:
-        f.write(str(img_path))
+        out_file = book_img_dir / f"{book_key.replace(' ','_')}_{ts}_{i+1}.png"
 
-    print("✔ Robot completado")
+        if img_bytes:
+            try:
+                with open(out_file, "wb") as f:
+                    f.write(img_bytes)
+                generated_image = str(out_file)
+            except:
+                generated_image = None
+
+        if not generated_image:
+            ph = placeholder_image(book_key, prompt, str(out_file))
+            if ph:
+                generated_image = ph
+
+        print("Saved image:", generated_image)
+
+    # ---- last_post storage ----
+    last_short = None
+
+    try:
+        with open(copys_file, "r", encoding="utf-8") as cf:
+            content = cf.read().strip().split("\n\n---\n")
+            if content:
+                last = content[-1]
+                if "SHORT:" in last:
+                    part = last.split("SHORT:")[1]
+                    if "LONG:" in part:
+                        part = part.split("LONG:")[0]
+                    last_short = part.strip()
+    except:
+        last_short = None
+
+    if not last_short:
+        last_short = compose_copies(book_key, description)["short"]
+
+    with open("last_post_for_bluesky.txt", "w", encoding="utf-8") as lf:
+        lf.write(last_short + "\n")
+
+    with open("last_post_image.txt", "w", encoding="utf-8") as lf:
+        lf.write(generated_image or "")
+
+    # ---- log ----
+    logf = LOGS_DIR / f"log_{ts}.txt"
+    with open(logf, "w", encoding="utf-8") as lg:
+        lg.write(f"{ts} - {book_key} - copies:{copies_per_run} images:{images_per_run}\n")
+
+    print("Done. Files created: last_post_for_bluesky.txt, last_post_image.txt")
 
 
-# -------------------------------
-# Ejecutar
-# -------------------------------
 if __name__ == "__main__":
     main()
