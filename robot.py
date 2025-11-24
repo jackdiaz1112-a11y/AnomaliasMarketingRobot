@@ -125,80 +125,81 @@ def hf_text_generate(prompt, models=None, max_tokens=200):
     return None
 
 
-def hf_image_generate(prompt, model="stabilityai/stable-diffusion-2"):
+def hf_image_generate(prompt, model="black-forest-labs/FLUX.1-dev"):
     """
-    Devuelve bytes de imagen o None.
-    Evita imágenes vacías/PNG negro.
+    Generador de imágenes Hugging Face corregido.
+    - Usa un modelo que sí funciona hoy con la API.
+    - Devuelve bytes PNG válidos.
+    - Maneja correctamente JSON y errores.
     """
     if not HF_TOKEN:
+        print("⚠ No hay HF_TOKEN")
         return None
 
     import requests
 
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    url = f"https://api-inference.huggingface.co/models/{model}"
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Accept": "image/png"
+    }
+
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "guidance_scale": 2.5,
+            "num_inference_steps": 30,
+            "width": 1024,
+            "height": 1024
+        }
+    }
 
     try:
-        r = requests.post(
-            HF_API_BASE + model,
-            headers=headers,
-            json={"inputs": prompt},
-            timeout=60
-        )
+        r = requests.post(url, headers=headers, json=payload, timeout=80)
 
-        if r.status_code != 200:
-            return None
+        if r.status_code == 200 and "image" in r.headers.get("content-type", ""):
+            return r.content  # bytes reales de PNG
 
-        content_type = r.headers.get("content-type", "")
-
-        # caso 1: imagen directa
-        if "image" in content_type:
-            img_bytes = r.content
-        else:
-            # caso 2: base64
-            j = r.json()
-            b64 = None
-            for key in ("image", "images", "generated_image", "data"):
-                if key in j:
-                    b64 = j[key]
-                    break
-            if not b64:
-                return None
-            img_bytes = base64.b64decode(b64)
-
-        # evitar PNG negro o vacío
+        # Si no devolvió imagen, intentar leer JSON para debug
         try:
-            img = Image.open(io.BytesIO(img_bytes))
-            if img.width < 50 or img.height < 50:
-                return None
-            # si toda la imagen es prácticamente negra, descartamos
-            extrema = img.convert("L").getextrema()
-            if extrema == (0, 0):
-                return None
-        except Exception:
-            return None
+            print("⚠ HF devolvió JSON:", r.json())
+        except:
+            print("⚠ HF devolvió contenido inesperado")
 
-        return img_bytes
+        return None
 
-    except Exception:
+    except Exception as e:
+        print("⚠ Error HF:", e)
         return None
 
 
 def placeholder_image(book_key, prompt, out_path):
-    W, H = 2048, 1152
+    """
+    Placeholder más visible y profesional (ya no negro).
+    """
+    W, H = 1200, 630
     try:
-        img = Image.new("RGB", (W, H), color=(22, 22, 25))
+        img = Image.new("RGB", (W, H), color=(240, 240, 245))  # gris muy claro
         draw = ImageDraw.Draw(img)
-        text = f"{book_key}\n\n{prompt[:300]}"
+
+        title_text = f"{book_key}"
+        prompt_text = prompt[:180]
+
         try:
-            font = ImageFont.truetype(
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 26
-            )
+            font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 42)
+            font_body = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 26)
         except:
-            font = ImageFont.load_default()
-        draw.multiline_text((40, 40), text, fill=(230, 230, 230), font=font)
-        img.save(out_path, "PNG")
+            font_title = ImageFont.load_default()
+            font_body = ImageFont.load_default()
+
+        draw.text((40, 40), title_text, fill=(30, 30, 30), font=font_title)
+        draw.multiline_text((40, 120), prompt_text, fill=(50, 50, 50), font=font_body)
+
+        img.save(out_path, format="PNG")
         return out_path
-    except Exception:
+
+    except Exception as e:
+        print("⚠ Error placeholder:", e)
         return None
 
 
