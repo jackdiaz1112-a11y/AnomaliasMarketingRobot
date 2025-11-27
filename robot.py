@@ -125,81 +125,53 @@ def hf_text_generate(prompt, models=None, max_tokens=200):
     return None
 
 
-def hf_image_generate(prompt, model="black-forest-labs/FLUX.1-dev"):
-    """
-    Generador de imágenes Hugging Face corregido.
-    - Usa un modelo que sí funciona hoy con la API.
-    - Devuelve bytes PNG válidos.
-    - Maneja correctamente JSON y errores.
-    """
+def hf_image_generate(prompt, model="stabilityai/stable-diffusion-2"):
     if not HF_TOKEN:
-        print("⚠ No hay HF_TOKEN")
         return None
 
     import requests
-
-    url = f"https://api-inference.huggingface.co/models/{model}"
     headers = {
         "Authorization": f"Bearer {HF_TOKEN}",
         "Accept": "image/png"
     }
 
-    payload = {
-        "inputs": prompt,
-        "parameters": {
-            "guidance_scale": 2.5,
-            "num_inference_steps": 30,
-            "width": 1024,
-            "height": 1024
-        }
-    }
+    url = HF_API_BASE + model
 
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=80)
+        r = requests.post(url, headers=headers, json={"inputs": prompt}, timeout=90)
 
-        if r.status_code == 200 and "image" in r.headers.get("content-type", ""):
-            return r.content  # bytes reales de PNG
+        if r.status_code != 200:
+            print("HF image API error:", r.text)
+            return None
 
-        # Si no devolvió imagen, intentar leer JSON para debug
-        try:
-            print("⚠ HF devolvió JSON:", r.json())
-        except:
-            print("⚠ HF devolvió contenido inesperado")
+        # Validación dura del PNG
+        if r.content[:8] != b"\x89PNG\r\n\x1a\n":
+            print("⚠️ Respuesta no es imagen válida.")
+            return None
 
-        return None
+        return r.content
 
     except Exception as e:
-        print("⚠ Error HF:", e)
+        print("HF image EXCEPTION:", e)
         return None
 
-
+    
 def placeholder_image(book_key, prompt, out_path):
-    """
-    Placeholder más visible y profesional (ya no negro).
-    """
-    W, H = 1200, 630
+    W, H = 1920, 1080
     try:
-        img = Image.new("RGB", (W, H), color=(240, 240, 245))  # gris muy claro
+        img = Image.new("RGB", (W, H), color=(240, 240, 240))
         draw = ImageDraw.Draw(img)
 
-        title_text = f"{book_key}"
-        prompt_text = prompt[:180]
+        title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 64)
+        text_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
 
-        try:
-            font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 42)
-            font_body = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 26)
-        except:
-            font_title = ImageFont.load_default()
-            font_body = ImageFont.load_default()
+        draw.text((80, 80), book_key, font=title_font, fill=(20, 20, 20))
+        draw.multiline_text((80, 200), prompt[:500], font=text_font, fill=(60, 60, 60), spacing=8)
 
-        draw.text((40, 40), title_text, fill=(30, 30, 30), font=font_title)
-        draw.multiline_text((40, 120), prompt_text, fill=(50, 50, 50), font=font_body)
-
-        img.save(out_path, format="PNG")
+        img.save(out_path)
         return out_path
 
-    except Exception as e:
-        print("⚠ Error placeholder:", e)
+    except Exception:
         return None
 
 
