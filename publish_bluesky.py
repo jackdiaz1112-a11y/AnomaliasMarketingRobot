@@ -1,5 +1,4 @@
 import os
-from datetime import datetime, timezone
 from atproto import Client, models
 
 print("▶ Iniciando publish_bluesky.py")
@@ -17,7 +16,7 @@ text_path = "last_post_for_bluesky.txt"
 imgref_path = "last_post_image.txt"
 
 if not os.path.exists(text_path):
-    print("❌ No existe last_post_for_bluesky.txt. Abortando.")
+    print("❌ No hay texto para publicar en Bluesky.")
     exit(0)
 
 text = open(text_path, "r", encoding="utf-8").read().strip()
@@ -30,29 +29,27 @@ if os.path.exists(imgref_path):
     if v:
         img_path = v
 
-# Login
+# Conectar con Bluesky
 client = Client()
 client.login(handle, app_password)
 print("✔ Autenticado como:", client.me.handle)
 
 # Subir imagen si existe
 image_blob_ref = None
+
 if img_path and os.path.exists(img_path):
     print("✔ Subiendo imagen:", img_path)
     with open(img_path, "rb") as f:
         img_bytes = f.read()
 
     print("   Tamaño imagen:", len(img_bytes), "bytes")
-
-    # upload_blob SOLO recibe los bytes
-    uploaded = client.upload_blob(img_bytes)
-image_blob_ref = uploaded.blob
-
-    # La referencia está en uploaded.blob
+    uploaded = client.com.atproto.repo.upload_blob(img_bytes)
     image_blob_ref = uploaded.blob
+    print("✔ Imagen subida correctamente")
 
 # Crear embed si hay imagen
 images_embed = None
+
 if image_blob_ref:
     images_embed = models.AppBskyEmbedImages.Main(
         images=[
@@ -64,20 +61,17 @@ if image_blob_ref:
     )
     print("✔ Embed de imagen creado")
 
-# Campo obligatorio createdAt
-created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
+# Crear post
 record = models.AppBskyFeedPost.Record(
     text=text,
-    created_at=created_at,
     embed=images_embed
 )
 
-print("✔ Record preparado, enviando post...")
+print("✔ Enviando post…")
 
 resp = client.app.bsky.feed.post.create(
     repo=client.me.did,
     record=record
 )
 
-print("✔ Post creado exitosamente:", resp)
+print("✅ Post creado exitosamente:", resp)
