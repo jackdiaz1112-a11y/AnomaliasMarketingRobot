@@ -45,8 +45,8 @@ if img_path and os.path.exists(img_path):
     print("   Tamaño imagen:", len(img_bytes), "bytes")
 
     # upload_blob SOLO recibe los bytes
-    uploaded = client.com.atproto.repo.upload_blob(img_bytes)
-    print("✔ Resultado upload_blob:", uploaded)
+    uploaded = client.upload_blob(img_bytes)
+image_blob_ref = uploaded.blob
 
     # La referencia está en uploaded.blob
     image_blob_ref = uploaded.blob
