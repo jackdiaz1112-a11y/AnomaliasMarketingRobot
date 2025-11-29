@@ -58,27 +58,37 @@ def pick_book_index():
     n = len(books)
     if n == 0:
         return None
-
     mode = config.get("publication", {}).get("mode", "alternate")
-
     if mode == "random":
-        return random.randint(0, n - 1)
-
+        return random.randint(0, n-1)
     if mode == "single":
         default = config.get("publication", {}).get("default_book_for_bluesky")
         if default:
-            keys = [k for k, _ in books]
+            keys = [k for k,_ in books]
             try:
                 return keys.index(default)
             except:
                 return 0
         return 0
-
-    # modo alternado
-    last = load_last_index()
+    # alternate (robusto)
+    p = STATE_DIR / "last_book_index.txt"
+    try:
+        last = int(p.read_text().strip()) if p.exists() else -1
+    except Exception:
+        last = -1
     nexti = (last + 1) % n
-    save_last_index(nexti)
+    # Si por alguna razón nexti apunta a un libro con datos insuficientes, buscamos siguiente válido
+    attempts = 0
+    while attempts < n:
+        book_key, meta = books[nexti]
+        # consideramos válido si tiene 'descripcion' o al menos 'amazon' o 'prompt'
+        if isinstance(meta, dict) and (meta.get("descripcion") or meta.get("amazon") or meta.get("prompt")):
+            break
+        nexti = (nexti + 1) % n
+        attempts += 1
+    p.write_text(str(nexti))
     return nexti
+
 
 
 # --------------------------
